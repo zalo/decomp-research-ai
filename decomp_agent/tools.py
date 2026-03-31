@@ -126,12 +126,21 @@ class ToolExecutor:
             # Write the new code
             old_code = extract_function_c(src_full, self.func_name)
             if old_code is None:
-                return (f"Error: could not find function `{self.func_name}` definition in source file. "
-                        f"Make sure your code includes the full function signature matching the original.")
+                return (f"Error: could not find function `{self.func_name}` in source file. "
+                        f"Make sure your code includes the full function signature.")
+
+            # Validate the signature hasn't changed
+            old_sig = old_code.split("{")[0].strip()
+            new_sig = c_code.split("{")[0].strip() if "{" in c_code else ""
+            if old_sig and new_sig and old_sig != new_sig:
+                return (f"SIGNATURE MISMATCH — you MUST keep the exact original signature.\n"
+                        f"Original: {old_sig}\n"
+                        f"Yours:    {new_sig}\n"
+                        f"Fix your code to use the original signature and try again.")
 
             if not replace_function(src_full, self.func_name, c_code):
-                return (f"Error: could not replace function. The function signature in your code "
-                        f"may not match. Original starts with:\n{old_code[:100]}...")
+                return (f"Error: could not replace function.\n"
+                        f"Original starts with: {old_code[:100]}...")
 
             # Compile
             ok, err = build_unit(self.config, self.source_path, self.unit_name)

@@ -95,9 +95,10 @@ def _ensure_c_code(config, db, func, unit, src, asm, dry_run):
         return False
 
     nearby_c, includes = _get_context(config, func, unit, src)
-    print(f"    → Trying AI decompile (up to {config.max_syntax_fix_attempts} attempts)...")
+    max_decompile_attempts = min(3, config.max_syntax_fix_attempts)
+    print(f"    → Trying AI decompile (up to {max_decompile_attempts} attempts)...")
 
-    for attempt in range(config.max_syntax_fix_attempts):
+    for attempt in range(max_decompile_attempts):
         # Build prompt with error feedback from previous attempt
         if last_error and attempt > 0:
             error_hint = f"\n\nPREVIOUS ATTEMPT FAILED TO COMPILE:\n{last_error[:500]}\n\nFix the error and try again."
@@ -110,6 +111,10 @@ def _ensure_c_code(config, db, func, unit, src, asm, dry_run):
                                       nearby_c=nearby_c, includes=includes)
         if not ai_result.success or not ai_result.c_code:
             print(f"    → attempt {attempt+1}/{config.max_syntax_fix_attempts}: no valid code")
+            continue
+        # Reject trivially short responses (just "return;" etc)
+        if len(ai_result.c_code.strip()) < 50:
+            print(f"    → attempt {attempt+1}/{config.max_syntax_fix_attempts}: response too short ({len(ai_result.c_code)} chars), skipping")
             continue
 
         db.log_attempt(Attempt(
@@ -129,7 +134,7 @@ def _ensure_c_code(config, db, func, unit, src, asm, dry_run):
             last_error = edit.compile_error or ""
             print(f"    → attempt {attempt+1}/{config.max_syntax_fix_attempts}: compile error: {last_error[:150]}")
 
-    print(f"    → All {config.max_syntax_fix_attempts} decompile attempts failed")
+    print(f"    → All {max_decompile_attempts} decompile attempts failed")
     db.update_state(func, "SKIPPED", last_error=f"decompile_failed: {last_error[:100]}")
     return False
 
