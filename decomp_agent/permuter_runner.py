@@ -158,7 +158,7 @@ def permute_function(config: Config, func_name: str, unit_name: str,
         return PermuterResult(None, None, 0, 0.0, False)
     try:
         return run_permuter(config, perm_dir)
-    except subprocess.TimeoutExpired:
+    except (subprocess.TimeoutExpired, subprocess.SubprocessError, OSError) as e:
         # Still check for results even after timeout
         best_source = None
         output_dirs = sorted(perm_dir.glob("output-*"), key=lambda p: int(p.name.split("-")[1]))

@@ -7,18 +7,25 @@ from typing import Optional
 from .config import Config
 
 
-def build_context(config: Config, source_path: str) -> Optional[Path]:
-    """Build the .ctx file for a source file via ninja."""
-    ctx_path = config.melee_root / "build" / "GALE01" / source_path.replace(".c", ".ctx")
+def build_context(config: Config, source_path: str = "") -> Optional[Path]:
+    """Build the universal context file (build/ctx.c) using m2ctx.
+
+    This generates a single context file with ALL project types resolved,
+    which is what m2c needs for proper type inference.
+    """
+    ctx_path = config.melee_root / "build" / "ctx.c"
+    if ctx_path.exists() and ctx_path.stat().st_size > 100000:
+        return ctx_path  # already generated and looks valid
+
     result = subprocess.run(
-        ["ninja", str(ctx_path)],
+        ["python3", "tools/m2ctx/m2ctx.py", "--quiet", "--preprocessor"],
         capture_output=True, text=True,
         cwd=str(config.melee_root),
-        timeout=60,
+        timeout=120,
     )
-    if result.returncode != 0:
-        return None
-    return ctx_path
+    if ctx_path.exists():
+        return ctx_path
+    return None
 
 
 def run_m2c(config: Config, func_name: str, asm_path: str,
@@ -28,6 +35,9 @@ def run_m2c(config: Config, func_name: str, asm_path: str,
     Returns the decompiled C code, or None on failure.
     """
     cmd = ["m2c", "--knr", "--pointer", "left", "-t", "ppc-mwcc-c"]
+    # Use universal context (build/ctx.c) for best type resolution
+    if ctx_path is None:
+        ctx_path = config.melee_root / "build" / "ctx.c"
     if ctx_path and ctx_path.exists():
         cmd.extend(["--context", str(ctx_path)])
     cmd.extend(["-f", func_name, str(asm_path)])

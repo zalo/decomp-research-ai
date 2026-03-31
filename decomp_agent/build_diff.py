@@ -45,7 +45,8 @@ class DiffResult:
             return f"COMPILE_ERROR: {self.compile_error[:100] if self.compile_error else 'unknown'}"
         if self.is_matched:
             return "MATCHED"
-        parts = [f"{self.func_match_pct:.1f}%"]
+        pct = f"{self.func_match_pct:.1f}%" if self.func_match_pct is not None else "n/a"
+        parts = [pct]
         parts.append(f"size:{self.func_size_compiled}/{self.func_size_target}")
         for kind, count in sorted(self.diff_counts.items()):
             if count > 0 and kind != "DIFF_NONE":
@@ -75,7 +76,17 @@ def build_unit(config: Config, source_path: str, unit_name: str = "") -> tuple[b
         timeout=60,
     )
     if result.returncode != 0:
-        return False, result.stderr[-500:] if result.stderr else result.stdout[-500:]
+        # Extract the actual compiler error from combined output
+        output = (result.stdout or "") + "\n" + (result.stderr or "")
+        # Look for MWCC error lines (start with # or contain "Error:")
+        error_lines = []
+        for line in output.split("\n"):
+            line = line.strip()
+            if line.startswith("#") or "Error:" in line or "error:" in line.lower():
+                error_lines.append(line)
+        if error_lines:
+            return False, "\n".join(error_lines[-10:])
+        return False, output[-500:]
     return True, ""
 
 

@@ -18,6 +18,7 @@ class TargetFunction:
     size_bytes: int
     match_pct: Optional[float]
     score: float  # higher = better candidate
+    is_placeholder: bool = False  # no C code yet, just /// #funcname
 
 
 def load_report(config: Config) -> dict:
@@ -74,26 +75,37 @@ def find_unmatched_functions(config: Config) -> list[TargetFunction]:
             if size > config.max_function_size:
                 continue
 
-            # Scoring: prefer small, nearly-matched functions in mature units
+            # Check what state the function's source is in
+            src_full = config.src_root.parent / source_path
+            from .source_editor import has_placeholder, extract_function_c
+            has_code = extract_function_c(src_full, name) is not None if src_full.exists() else False
+            is_placeholder = has_placeholder(src_full, name) if src_full.exists() else False
+
+            # Skip functions with no code and no placeholder — can't work on them
+            if not has_code and not is_placeholder:
+                continue
+
+            # Scoring: prefer functions with existing code (can improve immediately)
             size_score = 1.0 / max(size, 1)
-            match_bonus = 1.0
-            if match_pct is not None:
-                if match_pct >= 95:
-                    match_bonus = 5.0
-                elif match_pct >= 80:
-                    match_bonus = 3.0
-                elif match_pct >= 50:
-                    match_bonus = 2.0
-                elif match_pct > 0:
-                    match_bonus = 1.0
+
+            if has_code and match_pct is not None:
+                # Has code — prioritize by room for improvement
+                if match_pct < 50:
+                    match_bonus = 6.0  # lots of room
+                elif match_pct < 80:
+                    match_bonus = 5.0  # good room
+                elif match_pct < 95:
+                    match_bonus = 4.0  # moderate room
                 else:
-                    match_bonus = 0.3
+                    match_bonus = 2.0  # diminishing returns
+            elif is_placeholder:
+                match_bonus = 3.0  # needs decompile from scratch
             else:
-                match_bonus = 0.5  # asm-only, needs m2c first
+                match_bonus = 1.0  # has code but no match data
 
             unit_bonus = 1.0 + unit_maturity  # 1.0-2.0 based on how complete the unit is
 
-            score = size_score * match_bonus * unit_bonus * 10000  # scale up for readability
+            score = size_score * match_bonus * unit_bonus * 10000
 
             targets.append(TargetFunction(
                 func_name=name,
@@ -103,6 +115,7 @@ def find_unmatched_functions(config: Config) -> list[TargetFunction]:
                 size_bytes=size,
                 match_pct=match_pct,
                 score=score,
+                is_placeholder=is_placeholder and not has_code,
             ))
 
     targets.sort(key=lambda t: t.score, reverse=True)
@@ -136,11 +149,12 @@ def main():
 
     print(f"Total unmatched functions (≤{config.max_function_size}b): {len(targets)}")
     print()
-    print(f"{'Score':>8}  {'Match%':>7}  {'Size':>6}  {'Function':<40}  Unit")
-    print("-" * 110)
+    print(f"{'Score':>8}  {'Match%':>7}  {'Size':>6}  {'Type':>5}  {'Function':<40}  Unit")
+    print("-" * 120)
     for t in targets[:30]:
         pct = f"{t.match_pct:.1f}%" if t.match_pct is not None else "asm"
-        print(f"{t.score:8.1f}  {pct:>7}  {t.size_bytes:>6}  {t.func_name:<40}  {t.unit_name}")
+        typ = "NEW" if t.is_placeholder else "WIP"
+        print(f"{t.score:8.1f}  {pct:>7}  {t.size_bytes:>6}  {typ:>5}  {t.func_name:<40}  {t.unit_name}")
 
     # Also populate DB
     db = StateDB(config.state_db_path)

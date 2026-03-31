@@ -24,21 +24,23 @@ class Config:
     state_db_path: Path = field(init=False)
     nonmatchings_root: Path = field(init=False)
 
-    # AI configuration
+    # AI configuration (Anthropic direct)
     api_key: str = field(default_factory=lambda: os.environ.get("ANTHROPIC_API_KEY", ""))
-    cheap_model: str = "claude-haiku-4-5-20251001"
-    expensive_model: str = "claude-sonnet-4-6-20250514"
+    api_base_url: str = "https://api.anthropic.com"
+    initial_model: str = "claude-opus-4-20250514"
+    cheap_model: str = "claude-sonnet-4-20250514"
+    expensive_model: str = "claude-opus-4-20250514"
 
     # Parallelism
     max_workers: int = 4
     permuter_threads: int = 4
 
     # Limits per function
-    max_logic_fix_attempts: int = 3
-    max_regalloc_fix_attempts: int = 2
-    max_syntax_fix_attempts: int = 2
-    permuter_timeout_secs: int = 600
-    token_budget_per_func: int = 50000
+    max_logic_fix_attempts: int = 10
+    max_regalloc_fix_attempts: int = 10
+    max_syntax_fix_attempts: int = 10
+    permuter_timeout_secs: int = 120
+    token_budget_per_func: int = 0  # 0 = unlimited
 
     # Filtering
     max_function_size: int = 2048

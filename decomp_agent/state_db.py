@@ -1,6 +1,7 @@
 """SQLite state tracking for function decompilation progress."""
 
 import sqlite3
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -9,12 +10,12 @@ from typing import Optional
 # Valid states in the state machine
 STATES = [
     "UNSELECTED", "DECOMPILING", "BUILDING", "CLASSIFYING",
-    "MATCHED", "COMPILE_ERROR", "SIZE_MISMATCH", "REGALLOC_ONLY",
+    "MATCHED", "IMPROVED", "COMPILE_ERROR", "SIZE_MISMATCH", "REGALLOC_ONLY",
     "AI_LOGIC_FIX", "AI_REGALLOC_FIX", "AI_SYNTAX_FIX",
     "PERMUTER", "SKIPPED", "FAILED",
 ]
 
-TERMINAL_STATES = {"MATCHED", "SKIPPED", "FAILED"}
+TERMINAL_STATES = {"MATCHED", "IMPROVED", "SKIPPED", "FAILED"}
 
 
 @dataclass
@@ -49,6 +50,7 @@ class Attempt:
 class StateDB:
     def __init__(self, db_path: Path):
         self.db_path = db_path
+        self._lock = threading.Lock()
         self.conn = sqlite3.connect(str(db_path), check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
         self._create_tables()
@@ -92,10 +94,23 @@ class StateDB:
         """)
         self.conn.commit()
 
+    def _exec(self, sql, params=()):
+        with self._lock:
+            self.conn.execute(sql, params)
+            self.conn.commit()
+
+    def _query(self, sql, params=()):
+        with self._lock:
+            return self.conn.execute(sql, params).fetchall()
+
+    def _query_one(self, sql, params=()):
+        with self._lock:
+            return self.conn.execute(sql, params).fetchone()
+
     def upsert_function(self, func_name: str, unit_name: str, source_path: str,
                         asm_path: str, size_bytes: int,
                         initial_match_pct: Optional[float] = None):
-        self.conn.execute("""
+        self._exec("""
             INSERT INTO functions (func_name, unit_name, source_path, asm_path,
                                    size_bytes, initial_match_pct, current_match_pct)
             VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -105,12 +120,11 @@ class StateDB:
                 updated_at = CURRENT_TIMESTAMP
         """, (func_name, unit_name, source_path, asm_path, size_bytes,
               initial_match_pct, initial_match_pct))
-        self.conn.commit()
 
     def get_state(self, func_name: str) -> Optional[FunctionState]:
-        row = self.conn.execute(
+        row = self._query_one(
             "SELECT * FROM functions WHERE func_name = ?", (func_name,)
-        ).fetchone()
+        )
         if not row:
             return None
         return FunctionState(
@@ -133,20 +147,15 @@ class StateDB:
             sets.append(f"{k} = ?")
             vals.append(v)
         vals.append(func_name)
-        self.conn.execute(
-            f"UPDATE functions SET {', '.join(sets)} WHERE func_name = ?", vals
-        )
-        self.conn.commit()
+        self._exec(f"UPDATE functions SET {', '.join(sets)} WHERE func_name = ?", vals)
 
     def increment(self, func_name: str, field: str):
-        self.conn.execute(
+        self._exec(
             f"UPDATE functions SET {field} = {field} + 1, updated_at = CURRENT_TIMESTAMP "
-            f"WHERE func_name = ?", (func_name,)
-        )
-        self.conn.commit()
+            f"WHERE func_name = ?", (func_name,))
 
     def log_attempt(self, attempt: Attempt):
-        self.conn.execute("""
+        self._exec("""
             INSERT INTO attempts (func_name, state, match_pct, diff_summary,
                                   ai_model, ai_prompt_tokens, ai_response_tokens,
                                   duration_secs)
@@ -154,22 +163,24 @@ class StateDB:
         """, (attempt.func_name, attempt.state, attempt.match_pct,
               attempt.diff_summary, attempt.ai_model, attempt.ai_prompt_tokens,
               attempt.ai_response_tokens, attempt.duration_secs))
-        self.conn.commit()
 
     def get_pending(self, batch_size: int = 10, exclude_units: set = None):
         """Get functions ready for processing, avoiding locked units."""
         exclude_units = exclude_units or set()
         placeholders = ",".join("?" * len(exclude_units)) if exclude_units else "''"
-        rows = self.conn.execute(f"""
+        rows = self._query(f"""
             SELECT * FROM functions
-            WHERE state NOT IN ('MATCHED', 'SKIPPED', 'FAILED')
+            WHERE state NOT IN ('MATCHED', 'IMPROVED', 'SKIPPED', 'FAILED')
             AND unit_name NOT IN ({placeholders})
             ORDER BY
-                CASE WHEN current_match_pct IS NOT NULL
-                     THEN (100.0 - current_match_pct) ELSE 999 END ASC,
+                CASE WHEN initial_match_pct IS NULL THEN 0
+                     WHEN initial_match_pct < 50 THEN 1
+                     WHEN initial_match_pct < 80 THEN 2
+                     WHEN initial_match_pct < 95 THEN 3
+                     ELSE 4 END ASC,
                 size_bytes ASC
             LIMIT ?
-        """, (*exclude_units, batch_size)).fetchall()
+        """, (*exclude_units, batch_size))
         return [FunctionState(
             func_name=r["func_name"], unit_name=r["unit_name"],
             source_path=r["source_path"], asm_path=r["asm_path"],
@@ -183,19 +194,18 @@ class StateDB:
         ) for r in rows]
 
     def get_total_tokens(self, func_name: str) -> int:
-        row = self.conn.execute("""
+        row = self._query_one("""
             SELECT COALESCE(SUM(COALESCE(ai_prompt_tokens, 0) +
                                 COALESCE(ai_response_tokens, 0)), 0) as total
             FROM attempts WHERE func_name = ?
-        """, (func_name,)).fetchone()
+        """, (func_name,))
         return row["total"]
 
     def get_stats(self) -> dict:
         stats = {}
         for state in STATES:
-            row = self.conn.execute(
-                "SELECT COUNT(*) as c FROM functions WHERE state = ?", (state,)
-            ).fetchone()
+            row = self._query_one(
+                "SELECT COUNT(*) as c FROM functions WHERE state = ?", (state,))
             stats[state] = row["c"]
         return stats
 
