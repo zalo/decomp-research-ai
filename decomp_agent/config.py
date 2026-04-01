@@ -9,7 +9,7 @@ import os
 class Config:
     # Project paths
     melee_root: Path = Path("/home/selstad/Desktop/DecompAgent/melee")
-    permuter_root: Path = Path("/home/selstad/Desktop/DecompAgent/decomp-permuter")
+    permuter_root: Path = Path("/home/selstad/Desktop/DecompAgent/decomp-permuter-improved")
     agent_root: Path = Path("/home/selstad/Desktop/DecompAgent/decomp_agent")
 
     # Derived paths (set in __post_init__)
@@ -24,12 +24,19 @@ class Config:
     state_db_path: Path = field(init=False)
     nonmatchings_root: Path = field(init=False)
 
-    # AI configuration (Anthropic direct)
+    # AI configuration — switch between providers here
+    # Anthropic direct:
     api_key: str = field(default_factory=lambda: os.environ.get("ANTHROPIC_API_KEY", ""))
     api_base_url: str = "https://api.anthropic.com"
-    initial_model: str = "claude-opus-4-20250514"
+    initial_model: str = "claude-sonnet-4-20250514"
     cheap_model: str = "claude-sonnet-4-20250514"
-    expensive_model: str = "claude-opus-4-20250514"
+    expensive_model: str = "claude-sonnet-4-20250514"
+    # OpenRouter (uncomment and set OPENROUTER_API_KEY env var to use):
+    # api_key: str = field(default_factory=lambda: os.environ.get("OPENROUTER_API_KEY", ""))
+    # api_base_url: str = "https://openrouter.ai/api/v1"
+    # initial_model: str = "stepfun/step-3.5-flash:free"
+    # cheap_model: str = "stepfun/step-3.5-flash:free"
+    # expensive_model: str = "stepfun/step-3.5-flash:free"
 
     # Parallelism
     max_workers: int = 4
@@ -56,5 +63,5 @@ class Config:
         self.obj_root = br / "obj"
         self.src_root = self.melee_root / "src"
         self.ctx_root = br / "src"
-        self.state_db_path = self.melee_root / "decomp_agent_state.db"
+        self.state_db_path = Path("/tmp/decomp_agent_state.db")
         self.nonmatchings_root = self.melee_root / "nonmatchings"

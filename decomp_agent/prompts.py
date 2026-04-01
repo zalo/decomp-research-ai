@@ -76,6 +76,13 @@ WHEN YOUR CODE IS BIGGER THAN TARGET:
 → Remove unnecessary casts, temp variables, or function calls
 → Try direct field access instead of GET_FIGHTER/GET_ITEM macros
 
+CRITICAL RULE — STRUCT FIELD NAMES:
+→ ONLY use field names you found via search_struct_field or saw in nearby functions
+→ If you don't know the field name for an offset, use pointer arithmetic:
+    *(float*)((u8*)ptr + 0x198)  // SAFE — always compiles
+    ptr->x198                     // DANGEROUS — may not exist in the struct
+→ NEVER invent field names like xNNN unless search_struct_field confirmed them
+
 Return ONLY valid C code in a ```c code block. No explanation."""
 
 INITIAL_DECOMPILE = MWCC_CONTEXT + """

@@ -37,6 +37,15 @@ TOOL_DEFINITIONS = [
         }
     },
     {
+        "name": "ghidra_decompile",
+        "description": "Run the Ghidra decompiler on the current function. Returns Ghidra's C pseudocode which may have different structure than m2c. Useful as a second opinion when stuck.",
+        "input_schema": {
+            "type": "object",
+            "properties": {},
+            "required": []
+        }
+    },
+    {
         "name": "search_struct_field",
         "description": "Search project headers and context files for struct fields by hex offset or name. Also searches the current source file for usage patterns. Example: search '0xF8' or 'xDD4' to find field definitions.",
         "input_schema": {
@@ -69,7 +78,9 @@ class ToolExecutor:
     def execute(self, tool_name: str, tool_input: dict) -> str:
         """Execute a tool and return the result as a string."""
         try:
-            if tool_name == "compile_and_diff":
+            if tool_name == "ghidra_decompile":
+                return self._ghidra_decompile()
+            elif tool_name == "compile_and_diff":
                 return self._compile_and_diff(tool_input.get("c_code", ""))
             elif tool_name == "side_by_side_diff":
                 return self._side_by_side_diff()
@@ -321,6 +332,15 @@ class ToolExecutor:
         if results:
             return "\n".join(results[:20])
         return f"No results for '{query}'" + (f" in struct '{struct_type}'" if struct_type else "") + "\nTry searching the source file for similar field access patterns."
+
+    def _ghidra_decompile(self) -> str:
+        """Run Ghidra headless decompiler on the function."""
+        try:
+            from .ghidra_runner import decompile_with_ghidra
+            result = decompile_with_ghidra(self.config, self.func_name, self.source_path)
+            return result if result else "Ghidra decompilation failed or produced no output."
+        except Exception as e:
+            return f"Ghidra error: {e}"
 
     def _side_by_side_diff(self) -> str:
         """Show side-by-side target vs compiled assembly with diff markers."""

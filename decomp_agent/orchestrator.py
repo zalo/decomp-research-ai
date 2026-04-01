@@ -59,14 +59,127 @@ def _ensure_c_code(config, db, func, unit, src, asm, dry_run):
     """
     src_path = config.melee_root / src
 
-    if not has_placeholder(src_path, func):
-        # Function already has code (or no placeholder to fill)
-        if extract_function_c(src_path, func) is not None:
-            return True  # already has code
-        # No placeholder AND no code — can't do anything
-        print(f"    → No placeholder and no existing code, skipping")
-        db.update_state(func, "SKIPPED", last_error="no_placeholder_no_code")
+    # Check if function already has code
+    existing_code = extract_function_c(src_path, func)
+    has_code = existing_code is not None
+
+    # Also check: does the source file contain a function definition even if regex misses it?
+    if not has_code and src_path.exists():
+        text = src_path.read_text()
+        # Look for func_name followed by ( and then { on a nearby line
+        import re
+        if re.search(rf'{re.escape(func)}\s*\([^)]*\)\s*\{{', text, re.DOTALL):
+            has_code = True  # function body exists even if extract_function_c missed it
+
+    has_ph = has_placeholder(src_path, func)
+
+    if has_code:
+        # Check if it's just an empty stub — if so, try to bootstrap with m2c
+        body = existing_code.split("{", 1)[1] if "{" in existing_code else ""
+        body = body.rsplit("}", 1)[0].strip() if "}" in body else body.strip()
+        if not body or body in ("NOT_IMPLEMENTED;", "NOT_IMPLEMENTED"):
+            _try_m2c_bootstrap(config, func, src, asm, unit, "stub")
+        return True  # proceed to build/diff either way
+
+    if has_ph:
+        # Has placeholder but no body — try m2c bootstrap
+        print(f"    → Placeholder detected, trying m2c bootstrap...")
+        from .m2c_runner import decompile_function as _m2c
+        m2c_code = _m2c(config, func, src, asm)
+        if m2c_code:
+            func_only = _extract_function_from_m2c(m2c_code, func)
+            if func_only:
+                from .safe_edit import SafeFile
+                sf = SafeFile(config, src, unit)
+                edit = sf.write_placeholder(func, func_only)
+                if edit.success:
+                    print(f"    → m2c placeholder bootstrap: {len(func_only)} chars, compiles")
+                    return True
+                else:
+                    print(f"    → m2c didn't compile: {(edit.compile_error or '')[:100]}")
+            else:
+                print(f"    → Could not extract function from m2c output")
+        else:
+            print(f"    → m2c produced no output")
+
+        # Fallback: try Ghidra decompiler
+        print(f"    → Trying Ghidra fallback...")
+        try:
+            from .ghidra_runner import decompile_with_ghidra
+            ghidra_code = decompile_with_ghidra(config, func, src)
+            if ghidra_code:
+                from .safe_edit import SafeFile
+                sf = SafeFile(config, src, unit)
+                edit = sf.write_placeholder(func, ghidra_code)
+                if edit.success:
+                    print(f"    → Ghidra bootstrap: {len(ghidra_code)} chars, compiles")
+                    return True
+                else:
+                    print(f"    → Ghidra didn't compile: {(edit.compile_error or '')[:100]}")
+            else:
+                print(f"    → Ghidra produced no output")
+        except Exception as e:
+            print(f"    → Ghidra error: {e}")
+
+        db.update_state(func, "SKIPPED", last_error="all_decompilers_failed")
         return False
+
+    print(f"    → No placeholder and no existing code, skipping")
+    db.update_state(func, "SKIPPED", last_error="no_placeholder_no_code")
+    return False
+
+
+def _extract_function_from_m2c(m2c_code: str, func_name: str):
+    """Extract just the function definition from m2c output, stripping data/externs."""
+    import re
+    # Find the function by name — match any return type
+    # Pattern: optional qualifiers + any type + func_name + (
+    pattern = rf'^[^\S\n]*(?:static\s+)?[\w\s\*]+\b{re.escape(func_name)}\s*\('
+    for match in re.finditer(pattern, m2c_code, re.MULTILINE):
+        start = match.start()
+        # Verify this is followed by a function body (find opening brace)
+        rest = m2c_code[start:]
+        # Check there's no semicolon before the first brace (would be a declaration)
+        brace_pos = rest.find('{')
+        semi_pos = rest.find(';')
+        if brace_pos < 0 or (0 <= semi_pos < brace_pos):
+            continue  # declaration, not definition
+
+        # Extract the full function body
+        depth = 0
+        abs_brace = start + brace_pos
+        for i in range(abs_brace, len(m2c_code)):
+            if m2c_code[i] == '{':
+                depth += 1
+            elif m2c_code[i] == '}':
+                depth -= 1
+                if depth == 0:
+                    return m2c_code[start:i + 1]
+    return None
+
+
+def _try_m2c_bootstrap(config, func, src, asm, unit, context):
+    """Try to bootstrap an empty stub with m2c output."""
+    print(f"    → Empty {context} detected, bootstrapping with m2c...")
+    from .m2c_runner import decompile_function as _m2c
+    m2c_code = _m2c(config, func, src, asm)
+    if m2c_code:
+        # Extract just the function, stripping data tables and extern declarations
+        func_only = _extract_function_from_m2c(m2c_code, func)
+        if func_only:
+            from .safe_edit import SafeFile
+            sf = SafeFile(config, src, unit)
+            edit = sf.write_function(func, func_only)
+            if edit.success:
+                print(f"    → m2c bootstrap: {len(func_only)} chars, compiles")
+                return True
+            else:
+                print(f"    → m2c bootstrap didn't compile: {(edit.compile_error or '')[:100]}")
+        else:
+            print(f"    → Could not extract function from m2c output")
+    else:
+        print(f"    → m2c produced no output")
+    return False
 
     if dry_run:
         print(f"    → Would decompile {func}")
@@ -283,10 +396,25 @@ def _handle_size_mismatch(config, db, func, unit, src, asm, diff):
     if (executor.best_code and executor.best_match_pct > original_pct
             and executor.best_match_pct > 0):
         from .source_editor import replace_function
-        replace_function(config.melee_root / src, func, executor.best_code)
+        import shutil
+        # Save current file before applying
+        src_file = config.melee_root / src
+        backup = src_file.with_suffix(".c.apply_bak")
+        shutil.copy2(src_file, backup)
+
+        replace_function(src_file, func, executor.best_code)
         from .build_diff import build_unit as _bu
-        _bu(config, src, unit)
-        print(f"    -> Applied best code from tool ({executor.best_match_pct:.1f}%)")
+        ok, err = _bu(config, src, unit)
+        if ok:
+            print(f"    -> Applied best code from tool ({executor.best_match_pct:.1f}%)")
+            backup.unlink(missing_ok=True)
+        else:
+            # The "best" code breaks the build — revert
+            print(f"    -> Best code breaks build, reverting: {err[:100]}")
+            shutil.copy2(backup, src_file)
+            _bu(config, src, unit)
+            backup.unlink(missing_ok=True)
+            executor.best_code = None  # don't report as improved
 
     # Check current state
     final_diff = build_and_diff(config, src, unit, func)
@@ -295,7 +423,9 @@ def _handle_size_mismatch(config, db, func, unit, src, asm, diff):
 
     db.log_attempt(Attempt(
         func_name=func, state="AI_LOGIC_FIX", match_pct=final_pct,
-        diff_summary=final_diff.summary, ai_model=config.initial_model,
+        diff_summary=final_diff.summary,
+        c_code=executor.best_code,
+        ai_model=config.initial_model,
         ai_prompt_tokens=agent.total_prompt_tokens,
         ai_response_tokens=agent.total_response_tokens,
         duration_secs=0,
@@ -321,10 +451,8 @@ def _handle_size_mismatch(config, db, func, unit, src, asm, diff):
 
     if actual_pct > original_pct:
         state = "IMPROVED"
-    elif actual_pct >= original_pct:
-        state = "IMPROVED"  # kept same — still save the agent's work
     else:
-        state = "SKIPPED"
+        state = "SKIPPED"  # same or worse — don't claim improvement
 
     db.update_state(func, state, current_match_pct=actual_pct)
     print(f"    -> {state}: {original_pct:.1f}% -> {actual_pct:.1f}%")

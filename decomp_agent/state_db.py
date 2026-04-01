@@ -45,6 +45,7 @@ class Attempt:
     ai_prompt_tokens: Optional[int]
     ai_response_tokens: Optional[int]
     duration_secs: Optional[float]
+    c_code: Optional[str] = None
 
 
 class StateDB:
@@ -81,6 +82,7 @@ class StateDB:
                 state TEXT NOT NULL,
                 match_pct REAL,
                 diff_summary TEXT,
+                c_code TEXT,
                 ai_model TEXT,
                 ai_prompt_tokens INTEGER,
                 ai_response_tokens INTEGER,
@@ -157,12 +159,13 @@ class StateDB:
     def log_attempt(self, attempt: Attempt):
         self._exec("""
             INSERT INTO attempts (func_name, state, match_pct, diff_summary,
-                                  ai_model, ai_prompt_tokens, ai_response_tokens,
-                                  duration_secs)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                                  c_code, ai_model, ai_prompt_tokens,
+                                  ai_response_tokens, duration_secs)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (attempt.func_name, attempt.state, attempt.match_pct,
-              attempt.diff_summary, attempt.ai_model, attempt.ai_prompt_tokens,
-              attempt.ai_response_tokens, attempt.duration_secs))
+              attempt.diff_summary, attempt.c_code, attempt.ai_model,
+              attempt.ai_prompt_tokens, attempt.ai_response_tokens,
+              attempt.duration_secs))
 
     def get_pending(self, batch_size: int = 10, exclude_units: set = None):
         """Get functions ready for processing, avoiding locked units."""
@@ -173,11 +176,11 @@ class StateDB:
             WHERE state NOT IN ('MATCHED', 'IMPROVED', 'SKIPPED', 'FAILED')
             AND unit_name NOT IN ({placeholders})
             ORDER BY
-                CASE WHEN initial_match_pct IS NULL THEN 0
-                     WHEN initial_match_pct < 50 THEN 1
-                     WHEN initial_match_pct < 80 THEN 2
-                     WHEN initial_match_pct < 95 THEN 3
-                     ELSE 4 END ASC,
+                CASE WHEN initial_match_pct IS NOT NULL AND initial_match_pct < 50 THEN 0
+                     WHEN initial_match_pct IS NOT NULL AND initial_match_pct < 80 THEN 1
+                     WHEN initial_match_pct IS NOT NULL AND initial_match_pct < 95 THEN 2
+                     WHEN initial_match_pct IS NOT NULL THEN 3
+                     ELSE 9 END ASC,
                 size_bytes ASC
             LIMIT ?
         """, (*exclude_units, batch_size))

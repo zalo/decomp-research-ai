@@ -3,11 +3,22 @@
 ## Overview
 
 We built `decomp_agent/` — a Python automation pipeline that systematically processes
-GameCube decompilation functions through a state machine, using algorithmic tools
-for 90% of the work and cheap AI only when needed.
+GameCube decompilation functions through an agentic AI loop with tool use, using
+m2c, Ghidra, objdiff, and the decomp-permuter.
 
 **Location**: `/home/selstad/Desktop/DecompAgent/decomp_agent/`
-**Target**: Super Smash Bros. Melee (doldecomp/melee), 1845 unmatched functions
+**Target**: Super Smash Bros. Melee (doldecomp/melee)
+
+## Results (as of April 2026)
+
+| Metric | Value |
+|--------|-------|
+| Total commits | 83 |
+| 100% byte-perfect matches | 6 functions |
+| Functions improved | 75+ |
+| Fuzzy match improvement | 78.27% → 78.58% |
+| Build failure rate | 40% → 15% (across iterations) |
+| API cost | ~$30 total (Sonnet) |
 
 ## Architecture
 
